@@ -5,7 +5,6 @@ module Vanity
       #
       # @since 1.4.0
       def mongo_connection(spec)
-        require "mongo"
         MongodbAdapter.new(spec)
       end
       alias :mongodb_connection :mongo_connection
