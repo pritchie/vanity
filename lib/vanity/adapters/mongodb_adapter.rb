@@ -31,7 +31,7 @@ module Vanity
 
       def setup_connection(options = {})
         if options[:hosts]
-          args = (options[:hosts].map{|host| [host, options[:port]] } << {:connect => false})
+          # args = (options[:hosts].map{|host| [host.first, host.last] } << {:connect => false})
           @mongo = Mongo::ReplSetConnection.new(*args)
         else
           @mongo = Mongo::Connection.new(options[:host], options[:port], :connect => false)
