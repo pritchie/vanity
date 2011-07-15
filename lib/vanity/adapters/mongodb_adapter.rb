@@ -20,6 +20,7 @@ module Vanity
         if File.exists?("config/mongoid.yml")
           env = ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
           mongoid_options = YAML.load(ERB.new(File.read("config/mongoid.yml")).result)[env]
+          mongoid_options = mongoid_options.inject({}) { |h,kv| h[kv.first.to_sym] = kv.last ; h }
           options.merge!(mongoid_options)
         end
         setup_connection(options)
