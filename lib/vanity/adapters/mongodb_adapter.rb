@@ -17,6 +17,11 @@ module Vanity
       attr_reader :mongo
 
       def initialize(options)
+        if File.exists?("config/mongoid.yml")
+          env = ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
+          mongoid_options = YAML.load(ERB.new(File.read("config/mongoid.yml")).result)[env]
+          options.merge!(mongoid_options)
+        end
         setup_connection(options)
         @options = options.clone
         @options[:database] ||= (@options[:path] && @options[:path].split("/")[1]) || "vanity"
@@ -24,11 +29,6 @@ module Vanity
       end
 
       def setup_connection(options = {})
-        if File.exists?("config/mongoid.yml")
-          env = ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
-          mongoid_options = YAML.load(ERB.new(File.read("config/mongoid.yml")).result)[env]
-          options.merge!(mongoid_options)
-        end
         if options[:hosts]
           args = (options[:hosts].map{|host| [host, options[:port]] } << {:connect => false})
           @mongo = Mongo::ReplSetConnection.new(*args)
