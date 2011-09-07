@@ -125,7 +125,7 @@ module Vanity
       end
 
       def is_experiment_completed?(experiment)
-        !!@experiments.find_one(:_id=>experiment, :completed_at=>{ "$exists"=>true })
+        !!@experiments.find_one(:_id=>experiment)['completed_at']
       end
 
       def ab_counts(experiment, alternative)
