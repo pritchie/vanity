@@ -374,7 +374,7 @@ module Vanity
     # Path to template.
     def template(name)
       path = File.join(File.dirname(__FILE__), "templates/#{name}")
-      path << ".erb" unless name["."]
+      # path << ".erb" unless name["."]
       path
     end
   end
