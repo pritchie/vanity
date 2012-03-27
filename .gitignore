@@ -1,8 +1,10 @@
 .bundle
-database.sqlite
-dump.rdb
-test/myapp/log/
-*.rbc
-html
-*.gem
 .yardoc
+*.gem
+html
+test/myapp/log/
+vendor
+log/*
+test/dummy/db/*.sqlite3
+test/dummy/log/*.log
+test/dummy/tmp/

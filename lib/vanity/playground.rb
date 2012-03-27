@@ -26,9 +26,9 @@ module Vanity
       # In the case of Rails, use the Rails logger and collect only for
       # production environment by default.
       defaults = options[:rails] ? DEFAULTS.merge(:collecting => ::Rails.env.production?, :logger => ::Rails.logger) : DEFAULTS
-      if File.exists?("config/vanity.yml")
+      if config_file_exists?
         env = ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
-        config = YAML.load(ERB.new(File.read("config/vanity.yml")).result)[env]
+        config = load_config_file[env]
         if Hash === config
           config = config.inject({}) { |h,kv| h[kv.first.to_sym] = kv.last ; h }
         else
@@ -95,10 +95,11 @@ module Vanity
     # an exception if it cannot load the experiment's definition.
     #
     # @see Vanity::Experiment
+
     def experiment(name)
       id = name.to_s.downcase.gsub(/\W/, "_").to_sym
       warn "Deprecated: pleae call experiment method with experiment identifier (a Ruby symbol)" unless id == name
-      experiments[id.to_sym] or raise NameError, "No experiment #{id}"
+      experiments[id.to_sym] or raise NoExperimentError, "No experiment #{id}"
     end
 
 
@@ -137,7 +138,8 @@ module Vanity
         @experiments = {}
         @logger.info "Vanity: loading experiments from #{load_path}"
         Dir[File.join(load_path, "*.rb")].each do |file|
-          Experiment::Base.load self, @loading, file
+          experiment = Experiment::Base.load(self, @loading, file)
+          experiment.save
         end
       end
       @experiments
@@ -193,7 +195,7 @@ module Vanity
         Dir[File.join(load_path, "metrics/*.rb")].each do |file|
           Metric.load self, @loading, file
         end
-        if File.exist?("config/vanity.yml") && remote = YAML.load(ERB.new(File.read("config/vanity.yml")).result)["metrics"]
+        if config_file_exists? && remote = load_config_file["metrics"]
           remote.each do |id, url|
             fail "Metric #{id} already defined in playground" if metrics[id.to_sym]
             metric = Metric.new(self, id)
@@ -242,24 +244,25 @@ module Vanity
     #
     # @since 1.4.0 
     def establish_connection(spec = nil)
+      @spec = spec
       disconnect! if @adapter
       case spec
       when nil
-        if File.exists?("config/vanity.yml")
+        if config_file_exists?
           env = ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
-          spec = YAML.load(ERB.new(File.read("config/vanity.yml")).result)[env]
+          spec = load_config_file[env]
           fail "No configuration for #{env}" unless spec
           establish_connection spec
-        elsif File.exists?("config/redis.yml")
+        elsif config_file_exists?("redis.yml")
           env = ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
-          redis = YAML.load(ERB.new(File.read("config/redis.yml")).result)[env]
+          redis = load_config_file("redis.yml")[env]
           fail "No configuration for #{env}" unless redis
           establish_connection "redis://" + redis
         else
           establish_connection :adapter=>"redis"
         end
       when Symbol
-        spec = YAML.load(ERB.new(File.read("config/vanity.yml")).result)[spec.to_s]
+        spec = load_config_file[spec.to_s]
         establish_connection spec
       when String
         uri = URI.parse(spec)
@@ -268,13 +271,20 @@ module Vanity
           :host=>uri.host, :port=>uri.port, :path=>uri.path, :params=>params
       else
         spec = spec.inject({}) { |hash,(k,v)| hash[k.to_sym] = v ; hash }
-        begin
-          require "vanity/adapters/#{spec[:adapter]}_adapter"
-        rescue LoadError
-          raise "Could not find #{spec[:adapter]} in your load path"
-        end
         @adapter = Adapters.establish_connection(spec)
       end
+    end
+
+    def config_file_root
+      (defined?(::Rails) ? ::Rails.root : Pathname.new(".")) + "config"
+    end
+
+    def config_file_exists?(basename = "vanity.yml")
+      File.exists?(config_file_root + basename)
+    end
+
+    def load_config_file(basename = "vanity.yml")
+      YAML.load(ERB.new(File.read(config_file_root + basename)).result)
     end
 
     # Returns the current connection. Establishes new connection is necessary.
@@ -302,7 +312,7 @@ module Vanity
     #
     # @since 1.3.0
     def reconnect!
-      establish_connection
+      establish_connection(@spec)
     end
 
     # Deprecated. Use Vanity.playground.collecting = true/false instead.  Under
@@ -337,13 +347,17 @@ module Vanity
 
   # In the case of Rails, use the Rails logger and collect only for
   # production environment by default.
-  @playground = Playground.new(:rails=>defined?(::Rails))
   class << self
 
     # The playground instance.
     #
     # @see Vanity::Playground
     attr_accessor :playground
+    def playground
+      # In the case of Rails, use the Rails logger and collect only for
+      # production environment by default.
+      @playground ||= Playground.new(:rails=>defined?(::Rails))
+    end
 
     # Returns the Vanity context.  For example, when using Rails this would be
     # the current controller, which can be used to get/set the vanity identity.

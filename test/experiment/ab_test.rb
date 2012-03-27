@@ -13,7 +13,11 @@ class AbTestController < ActionController::Base
   end
 
   def test_capture
-    render :inline=>"<% ab_test :simple do |value| %><%= value %><% end %>"
+    if Rails.version.to_i == 3
+      render :inline=>"<%= ab_test :simple do |value| %><%= value %><% end %>"
+    else
+      render :inline=>"<% ab_test :simple do |value| %><%= value %><% end %>"
+    end
   end
 
   def track
@@ -230,7 +234,7 @@ class AbTestTest < ActionController::TestCase
   # -- A/B helper methods --
 
   def test_fail_if_no_experiment
-    assert_raise NameError do
+    assert_raise Vanity::NoExperimentError do
       get :test_render
     end
   end
@@ -276,7 +280,7 @@ class AbTestTest < ActionController::TestCase
       metrics :coolness
     end
     responses = Array.new(100) do
-      @controller.send(:cookies).clear
+      @controller.send(:cookies).each{ |cookie| @controller.send(:cookies).delete(cookie.first) }
       get :track
       @response.body
     end
@@ -545,7 +549,7 @@ This experiment did not run long enough to find a clear winner.
   def test_completion_if_fails
     new_ab_test :simple do
       identify { rand }
-      complete_if { fail }
+      complete_if { fail "Testing complete_if raises exception" }
       metrics :coolness
     end
     experiment(:simple).choose
@@ -639,7 +643,7 @@ This experiment did not run long enough to find a clear winner.
 
   def test_outcome_is_fails
     new_ab_test :quick do
-      outcome_is { fail }
+      outcome_is { fail "Testing outcome_is raising exception" }
       metrics :coolness
     end
     experiment(:quick).complete!
@@ -735,7 +739,6 @@ This experiment did not run long enough to find a clear winner.
     end
     experiment(:simple).chooses(:b)
     experiment(:simple).chooses(:c)
-    assert_equal experiment(:simple).alternatives[1].participants, 1
     assert_equal experiment(:simple).alternatives[2].participants, 1
   end
 

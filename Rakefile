@@ -1,4 +1,5 @@
 require "rake/testtask"
+require 'appraisal'
 
 # -- Building stuff --
 
@@ -70,14 +71,14 @@ task "test:setup" do
 end
 
 # These are all the adapters we're going to test with.
-ADAPTERS = %w{redis mongodb}
+ADAPTERS = %w{redis mongodb mysql}
 
 desc "Test using different back-ends"
 task "test:adapters", :adapter do |t, args|
   adapters = args.adapter ? [args.adapter] : ADAPTERS
   adapters.each do |adapter|
     puts "** Testing #{adapter} adapter"
-    sh "rake test ADAPTER=#{adapter} #{'--trace' if Rake.application.options.trace}"
+    sh "rake appraisal test DB=#{adapter} #{'--trace' if Rake.application.options.trace}"
   end
 end
 
@@ -115,7 +116,7 @@ end
 desc "Jekyll generates the main documentation (sans API)"
 task(:jekyll) { sh "jekyll", "doc", "html" }
 file "html/vanity.pdf"=>:jekyll do |t|
-  pages = %w{index metrics ab_testing rails identity configuring contributing}.map{ |p| "html/#{p}.html" }
+  pages = %w{index metrics ab_testing rails email identity configuring contributing}.map{ |p| "html/#{p}.html" }
   args = %w{--disable-javascript --outline --title Vanity --header-html doc/_layouts/_header.html --print-media-type}
   args.concat %w{--margin-left 20 --margin-right 20 --margin-top 20 --margin-bottom 20 --header-spacing 5}
   args.concat pages << t.name

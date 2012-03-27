@@ -44,23 +44,57 @@ module Vanity
             return @vanity_identity if @vanity_identity
             if symbol && object = send(symbol)
               @vanity_identity = object.id
-            elsif response # everyday use
-              @vanity_identity = cookies["vanity_id"] || ActiveSupport::SecureRandom.hex(16)
+            elsif request.get? && params[:_identity]
+              @vanity_identity = params[:_identity]
               cookies["vanity_id"] = { :value=>@vanity_identity, :expires=>1.month.from_now }
+              @vanity_identity
+            elsif response # everyday use
+              #conditional for Rails2 support
+              secure_random = defined?(SecureRandom) ? SecureRandom : ActiveSupport::SecureRandom
+              @vanity_identity = cookies["vanity_id"] || secure_random.hex(16)
+              cookie = { :value=>@vanity_identity, :expires=>1.month.from_now }
+              # Useful if application and admin console are on separate domains.
+              # This only works in Rails 3.x.
+              cookie[:domain] ||= ::Rails.application.config.session_options[:domain] if ::Rails.respond_to?(:application)
+              cookies["vanity_id"] = cookie
               @vanity_identity
             else # during functional testing
               @vanity_identity = "test"
             end
           end
         end
+        protected :vanity_identity
         around_filter :vanity_context_filter
         before_filter :vanity_reload_filter unless ::Rails.configuration.cache_classes
         before_filter :vanity_query_parameter_filter
+        after_filter :vanity_track_filter
       end
       protected :use_vanity
     end
 
-
+    module UseVanityMailer
+      def use_vanity_mailer(symbol = nil)
+        # Context is the instance of ActionMailer::Base
+        Vanity.context = self
+        if symbol && (@object = symbol)
+          class << self
+            define_method :vanity_identity do
+              @vanity_identity = (String === @object ? @object : @object.id)
+            end
+          end
+        else
+          class << self
+            define_method :vanity_identity do
+              secure_random = defined?(SecureRandom) ? SecureRandom : ActiveSupport::SecureRandom
+              @vanity_identity = @vanity_identity || secure_random.hex(16)
+            end
+          end
+        end
+      end
+      protected :use_vanity_mailer
+    end
+    
+    
     # Vanity needs these filters.  They are includes in ActionController and
     # automatically added when you use #use_vanity in your controller.
     module Filters
@@ -108,7 +142,15 @@ module Vanity
       def vanity_reload_filter
         Vanity.playground.reload!
       end
-
+      
+      # Filter to track metrics
+      # pass _track param along to call track! on that alternative
+      def vanity_track_filter
+        if request.get? && params[:_track]
+          track! params[:_track]
+        end
+      end
+      
       protected :vanity_context_filter, :vanity_query_parameter_filter, :vanity_reload_filter
     end
 
@@ -142,24 +184,40 @@ module Vanity
       def ab_test(name, &block)
         if Vanity.playground.using_js?
           @_vanity_experiments ||= {}
-          @_vanity_experiments[name] ||= Vanity.playground.experiment(name).choose
+          @_vanity_experiments[name] ||= Vanity.playground.experiment(name.to_sym).choose
           value = @_vanity_experiments[name].value
         else
-          value = Vanity.playground.experiment(name).choose.value
+          value = Vanity.playground.experiment(name.to_sym).choose.value
         end
  
         if block
           content = capture(value, &block)
-          block_called_from_erb?(block) ? concat(content) : content
+          if defined?(block_called_from_erb?) && block_called_from_erb?(block)
+             concat(content)
+          else
+            content
+          end
         else
           value
         end
+      end
+      
+      # Generate url with the identity of the current user and the metric to track on click
+      def vanity_track_url_for(identity, metric, options = {})
+        options = options.merge(:_identity => identity, :_track => metric)
+        url_for(options)
+      end
+      
+      # Generate url with the fingerprint for the current Vanity experiment
+      def vanity_tracking_image(identity, metric, options = {})
+        options = options.merge(:controller => :vanity, :action => :image, :_identity => identity, :_track => metric)
+        image_tag(url_for(options), :width => "1px", :height => "1px", :alt => "")
       end
 
       def vanity_js
         return if @_vanity_experiments.nil?
         javascript_tag do
-          render Vanity.template("vanity.js.erb")
+          render :file => Vanity.template("_vanity.js.erb")
         end
       end
 
@@ -196,19 +254,26 @@ module Vanity
       end
 
       def chooses
-        exp = Vanity.playground.experiment(params[:e])
+        exp = Vanity.playground.experiment(params[:e].to_sym)
         exp.chooses(exp.alternatives[params[:a].to_i].value)
         render :file=>Vanity.template("_experiment"), :locals=>{:experiment=>exp}
       end
 
       def add_participant
-	if params[:e].nil? || params[:e].empty?
-	  render :status => 404, :nothing => true
-	  return
-	end
-        exp = Vanity.playground.experiment(params[:e])
+      	if params[:e].nil? || params[:e].empty?
+      	  render :status => 404, :nothing => true
+      	  return
+      	end
+        exp = Vanity.playground.experiment(params[:e].to_sym)
         exp.chooses(exp.alternatives[params[:a].to_i].value)
         render :status => 200, :nothing => true
+      end
+    end
+    
+    module TrackingImage
+      def image
+        # send image
+        send_file(File.expand_path("../images/x.gif", File.dirname(__FILE__)), :type => 'image/gif', :stream => false, :disposition => 'inline')
       end
     end
   end
@@ -237,29 +302,21 @@ if defined?(ActionController)
   end
 end
 
-
-# Automatically configure Vanity.
-if defined?(Rails)
-  if Rails.const_defined?(:Railtie) # Rails 3
-    class Plugin < Rails::Railtie # :nodoc:
-      initializer "vanity.require" do |app|
-        Vanity::Rails.load!
-      end
-    end
-  else
-    Rails.configuration.after_initialize do
-      Vanity::Rails.load!
-    end
+if defined?(ActionMailer)
+  # Include in mailer, add view helper methods.
+  ActionMailer::Base.class_eval do
+    include Vanity::Rails::UseVanityMailer
+    include Vanity::Rails::Filters
+    helper Vanity::Rails::Helpers
   end
 end
-
 
 # Reconnect whenever we fork under Passenger.
 if defined?(PhusionPassenger)
   PhusionPassenger.on_event(:starting_worker_process) do |forked|
     if forked
       begin
-        Vanity.playground.establish_connection if Vanity.playground.collecting?
+        Vanity.playground.reconnect! if Vanity.playground.collecting?
       rescue Exception=>ex
         Rails.logger.error "Error reconnecting: #{ex.to_s}"
       end

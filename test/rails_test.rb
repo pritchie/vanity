@@ -6,10 +6,15 @@ class UseVanityController < ActionController::Base
   def index
     render :text=>ab_test(:pie_or_cake)
   end
+
+  def js
+    ab_test(:pie_or_cake)
+    render :inline => "<%= vanity_js -%>"
+  end
 end
 
 # Pages accessible to everyone, e.g. sign in, community search.
-class UseVanityTest < ActionController::TestCase
+class UseVanityControllerTest < ActionController::TestCase
   tests UseVanityController
 
   def setup
@@ -21,6 +26,15 @@ class UseVanityTest < ActionController::TestCase
     UseVanityController.class_eval do
       use_vanity :current_user
     end
+    if ::Rails.respond_to?(:application) # Rails 3 configuration
+      ::Rails.application.config.session_options[:domain] = '.foo.bar'
+    end
+  end
+
+  def test_render_js_for_tests
+    Vanity.playground.use_js!
+    get :js
+    assert_match /script.*e=pie_or_cake.*script/m, @response.body
   end
 
   def test_chooses_sets_alternatives_for_rails_tests
@@ -36,9 +50,11 @@ class UseVanityTest < ActionController::TestCase
 
   def test_vanity_cookie_is_persistent
     get :index
-    assert cookie = @response["Set-Cookie"].find { |c| c[/^vanity_id=/] }
-    assert expires = cookie[/vanity_id=[a-f0-9]{32}; path=\/; expires=(.*)(;|$)/, 1]
-    assert_in_delta Time.parse(expires), Time.now + 1.month, 1.minute
+    cookie = @response["Set-Cookie"].to_s
+    assert_match /vanity_id=[a-f0-9]{32};/, cookie
+    expires = cookie[/expires=(.*)(;|$)/, 1]
+    assert expires
+    assert_in_delta Time.parse(expires), Time.now + 1.month, 1.day
   end
 
   def test_vanity_cookie_default_id
@@ -82,7 +98,17 @@ class UseVanityTest < ActionController::TestCase
     get :index
     assert_equal "576", @controller.send(:vanity_identity)
   end
-
+  
+  def test_vanity_identity_set_with_indentity_paramater
+    get :index, :_identity => "id_from_params"
+    assert_equal "id_from_params", @controller.send(:vanity_identity)
+    
+    @request.cookies['vanity_id'] = "old_id"
+    get :index, :_identity => "id_from_params"
+    assert_equal "id_from_params", @controller.send(:vanity_identity)
+    assert cookies['vanity_id'], "id_from_params"
+  end
+  
   # query parameter filter
 
   def test_redirects_and_loses_vanity_query_parameter
@@ -110,6 +136,15 @@ class UseVanityTest < ActionController::TestCase
     assert !experiment(:pie_or_cake).showing?(first)
   end
 
+  def test_track_param_tracks_a_metric
+    get :index, :_identity => "123", :_track => "sugar_high"
+    assert_equal experiment(:pie_or_cake).alternatives[0].converted, 1
+  end
+  
+  def test_cookie_domain_from_rails_configuration
+    get :index
+    assert_match /domain=.foo.bar/, @response["Set-Cookie"] if ::Rails.respond_to?(:application)
+  end
 
   # -- Load path --
 
@@ -139,115 +174,150 @@ $stdout << Vanity.playground.load_path
 
   # -- Connection configuration --
 
-  def test_default_connection
-    assert_equal "redis://127.0.0.1:6379/0", load_rails(<<-RB)
+  if ENV['DB'] == 'redis'
+    def test_default_connection
+      assert_equal "redis://127.0.0.1:6379/0", load_rails(<<-RB)
 initializer.after_initialize
 $stdout << Vanity.playground.connection
-    RB
-  end
+      RB
+    end
 
-  def test_connection_from_string
-    assert_equal "redis://192.168.1.1:6379/5", load_rails(<<-RB)
+    def test_connection_from_string
+      assert_equal "redis://192.168.1.1:6379/5", load_rails(<<-RB)
 Vanity.playground.establish_connection "redis://192.168.1.1:6379/5"
 initializer.after_initialize
 $stdout << Vanity.playground.connection
-    RB
-  end
+      RB
+    end
 
-  def test_connection_from_yaml
-    FileUtils.mkpath "tmp/config"
-    ENV["RAILS_ENV"] = "production"
-    File.open("tmp/config/vanity.yml", "w") do |io|
-      io.write <<-YML
+    def test_connection_from_yaml
+      FileUtils.mkpath "tmp/config"
+      ENV["RAILS_ENV"] = "production"
+      File.open("tmp/config/vanity.yml", "w") do |io|
+        io.write <<-YML
 production:
   adapter: redis
   host: somehost
   database: 15
-      YML
-    end
-    assert_equal "redis://somehost:6379/15", load_rails(<<-RB)
+        YML
+      end
+      assert_equal "redis://somehost:6379/15", load_rails(<<-RB)
 initializer.after_initialize
 $stdout << Vanity.playground.connection
-    RB
-  ensure
-    File.unlink "tmp/config/vanity.yml"
+      RB
+    ensure
+      File.unlink "tmp/config/vanity.yml"
+    end
+
+    def test_connection_from_yaml_url
+      FileUtils.mkpath "tmp/config"
+      ENV["RAILS_ENV"] = "production"
+      File.open("tmp/config/vanity.yml", "w") do |io|
+        io.write <<-YML
+production: redis://somehost/15
+        YML
+      end
+      assert_equal "redis://somehost:6379/15", load_rails(<<-RB)
+initializer.after_initialize
+$stdout << Vanity.playground.connection
+      RB
+    ensure
+      File.unlink "tmp/config/vanity.yml"
+    end
+
+    def test_connection_from_yaml_with_erb
+      FileUtils.mkpath "tmp/config"
+      ENV["RAILS_ENV"] = "production"
+      # Pass storage URL through environment like heroku does
+      ENV["REDIS_URL"] = "redis://somehost:6379/15"
+      File.open("tmp/config/vanity.yml", "w") do |io|
+        io.write <<-YML
+production: <%= ENV['REDIS_URL'] %>
+        YML
+      end
+      assert_equal "redis://somehost:6379/15", load_rails(<<-RB)
+initializer.after_initialize
+$stdout << Vanity.playground.connection
+      RB
+    ensure
+      File.unlink "tmp/config/vanity.yml"
+    end
+
+    def test_connection_from_redis_yml
+      FileUtils.mkpath "tmp/config"
+      yml = File.open("tmp/config/redis.yml", "w")
+      yml << "production: internal.local:6379\n"
+      yml.flush
+      assert_equal "redis://internal.local:6379/0", load_rails(<<-RB)
+initializer.after_initialize
+$stdout << Vanity.playground.connection
+      RB
+    ensure
+      File.unlink yml.path
+    end
+  
+
   end
 
-  def test_mongo_connection_from_yaml
-    FileUtils.mkpath "tmp/config"
-    File.open("tmp/config/vanity.yml", "w") do |io|
-      io.write <<-YML
+  if ENV['DB'] == 'mongo'
+    def test_mongo_connection_from_yaml
+      FileUtils.mkpath "tmp/config"
+      File.open("tmp/config/vanity.yml", "w") do |io|
+        io.write <<-YML
 mongodb:
   adapter: mongodb
   host: localhost
   port: 27017
   database: vanity_test
-      YML
-    end
+        YML
+      end
 
-    ENV["RAILS_ENV"] = "mongodb"
-    assert_equal "mongodb://localhost:27017/vanity_test", load_rails(<<-RB)
+      assert_equal "mongodb://localhost:27017/vanity_test", load_rails(<<-RB, "mongodb")
 initializer.after_initialize
 $stdout << Vanity.playground.connection
-    RB
-  ensure
-    File.unlink "tmp/config/vanity.yml"
-  end
+      RB
+    ensure
+      File.unlink "tmp/config/vanity.yml"
+    end
 
-  def test_mongodb_replica_set_connection
-    FileUtils.mkpath "tmp/config"
-    File.open("tmp/config/vanity.yml", "w") do |io|
-      io.write <<-YML
+    unless ENV['CI'] == 'true'
+      def test_mongodb_replica_set_connection
+        FileUtils.mkpath "tmp/config"
+        File.open("tmp/config/vanity.yml", "w") do |io|
+          io.write <<-YML
 mongodb:
   adapter: mongodb
   hosts:
     - localhost
   port: 27017
   database: vanity_test
-      YML
-    end
+          YML
+        end
 
-    ENV["RAILS_ENV"] = "mongodb"
-    assert_equal "mongodb://localhost:27017/vanity_test", load_rails(<<-RB)
+        assert_equal "mongodb://localhost:27017/vanity_test", load_rails(<<-RB, "mongodb")
 initializer.after_initialize
 $stdout << Vanity.playground.connection
-    RB
+        RB
 
-    ENV["RAILS_ENV"] = "mongodb"
-    assert_equal "Mongo::ReplSetConnection", load_rails(<<-RB)
+        assert_equal "Mongo::ReplSetConnection", load_rails(<<-RB, "mongodb")
 initializer.after_initialize
 $stdout << Vanity.playground.connection.mongo.class
-    RB
-  ensure
-    File.unlink "tmp/config/vanity.yml"
-  end
-
-  def test_connection_from_yaml_url
-    FileUtils.mkpath "tmp/config"
-    ENV["RAILS_ENV"] = "production"
-    File.open("tmp/config/vanity.yml", "w") do |io|
-      io.write <<-YML
-production: redis://somehost/15
-      YML
+        RB
+      ensure
+        File.unlink "tmp/config/vanity.yml"
+      end
     end
-    assert_equal "redis://somehost:6379/15", load_rails(<<-RB)
-initializer.after_initialize
-$stdout << Vanity.playground.connection
-    RB
-  ensure
-    File.unlink "tmp/config/vanity.yml"
   end
 
   def test_connection_from_yaml_missing
     FileUtils.mkpath "tmp/config"
-    ENV["RAILS_ENV"] = "development"
     File.open("tmp/config/vanity.yml", "w") do |io|
       io.write <<-YML
 production:
   adapter: redis
       YML
     end
-    assert_equal "No configuration for development", load_rails(<<-RB)
+    assert_equal "No configuration for development", load_rails(<<-RB, "development")
 initializer.after_initialize
 $stdout << (Vanity.playground.connection rescue $!.message)
     RB
@@ -255,43 +325,11 @@ $stdout << (Vanity.playground.connection rescue $!.message)
     File.unlink "tmp/config/vanity.yml"
   end
 
-  def test_connection_from_yaml_with_erb
-    FileUtils.mkpath "tmp/config"
-    ENV["RAILS_ENV"] = "production"
-    # Pass storage URL through environment like heroku does
-    ENV["REDIS_URL"] = "redis://somehost:6379/15"
-    File.open("tmp/config/vanity.yml", "w") do |io|
-      io.write <<-YML
-production: <%= ENV['REDIS_URL'] %>
-      YML
-    end
-    assert_equal "redis://somehost:6379/15", load_rails(<<-RB)
-initializer.after_initialize
-$stdout << Vanity.playground.connection
-    RB
-  ensure
-    File.unlink "tmp/config/vanity.yml"
-  end
-
-  def test_connection_from_redis_yml
-    FileUtils.mkpath "tmp/config"
-    yml = File.open("tmp/config/redis.yml", "w")
-    yml << "development: internal.local:6379\n"
-    yml.flush
-    assert_equal "redis://internal.local:6379/0", load_rails(<<-RB)
-initializer.after_initialize
-$stdout << Vanity.playground.connection
-    RB
-  ensure
-    File.unlink yml.path
-  end
-  
   def test_collection_from_vanity_yaml
     FileUtils.mkpath "tmp/config"
-    ENV["RAILS_ENV"] = "development"
     File.open("tmp/config/vanity.yml", "w") do |io|
       io.write <<-YML
-development:
+production:
   collecting: false
       YML
     end
@@ -347,7 +385,7 @@ $stdout << Vanity.playground.collecting?
 $:.delete_if { |path| path[/gems\\/vanity-\\d/] }
 $:.unshift File.expand_path("../lib")
 RAILS_ROOT = File.expand_path(".")
-RAILS_ENV = "#{env}"
+RAILS_ENV = ENV['RACK_ENV'] = "#{env}"
 require "initializer"
 require "active_support"
 Rails.configuration = Rails::Configuration.new
@@ -367,6 +405,8 @@ require "vanity"
 
   def teardown
     super
-    UseVanityController.send(:filter_chain).clear
+    if !rails3?
+      UseVanityController.send(:filter_chain).clear
+    end
   end
 end

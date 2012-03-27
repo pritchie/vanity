@@ -52,7 +52,7 @@ module Vanity
             extend Definition
             experiment = eval(source, context.new_binding(playground, id), file)
             fail NameError.new("Expected #{file} to define experiment #{id}", id) unless playground.experiments[id]
-            experiment
+            return experiment
           end
         rescue
           error = NameError.exception($!.message, id)
@@ -79,6 +79,8 @@ module Vanity
       # Unique identifier, derived from name experiment name, e.g. "Green
       # Button" becomes :green_button.
       attr_reader :id
+
+      attr_reader :playground
 
       # Time stamp when experiment was created.
       def created_at
@@ -179,7 +181,7 @@ module Vanity
       def default_identify(context)
         raise "No Vanity.context" unless context
         raise "Vanity.context does not respond to vanity_identity" unless context.respond_to?(:vanity_identity)
-        context.vanity_identity or raise "Vanity.context.vanity_identity - no identity"
+        context.send(:vanity_identity) or raise "Vanity.context.vanity_identity - no identity"
       end
 
       # Derived classes call this after state changes that may lead to
@@ -188,8 +190,8 @@ module Vanity
         if @complete_block
           begin
             complete! if @complete_block.call
-          rescue => e
-            warn "Error in Vanity::Experiment::Base: #{e.message}" 
+          rescue
+            warn "Error in Vanity::Experiment::Base: #{$!}"
           end
         end
       end
@@ -209,4 +211,8 @@ module Vanity
       
     end
   end
+
+  class NoExperimentError < NameError
+  end
+  
 end

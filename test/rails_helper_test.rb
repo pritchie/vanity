@@ -25,4 +25,14 @@ class RailsHelperTest < ActionView::TestCase
       assert result == ab_test(:pie_or_cake)
     end
   end
+  
+  def test_vanity_track_url_for_returns_url_with_identity_and_metrics
+    self.expects(:url_for).with(:controller => "controller", :action => "action", :_identity => '123', :_track => :sugar_high)
+    vanity_track_url_for("123", :sugar_high, :controller => "controller", :action => "action")
+  end
+  
+  def test_vanity_tracking_image
+    self.expects(:url_for).with(:controller => :vanity, :action => :image, :_identity => '123', :_track => :sugar_high).returns("/url")
+    assert_equal image_tag("/url", :width => "1px", :height => "1px", :alt => ""), vanity_tracking_image("123", :sugar_high, options = {})
+  end
 end
