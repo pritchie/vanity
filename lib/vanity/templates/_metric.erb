@@ -12,7 +12,7 @@ begin
 rescue Exception=>ex
   %{<div class="error">#{vanity_h ex.message}</div>}
 end %>
-<% if total = metric.try(:total) %>
+<% if total = metric.respond_to?(:total) && metric.try(:total) %>
 <p>
   <strong>All Time:</strong>
   <%= metric.total %>
