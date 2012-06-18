@@ -1,7 +1,7 @@
 <h3><%=vanity_h metric.name %></h3>
 <%= vanity_simple_format vanity_h(Vanity::Metric.description(metric).to_s), :class=>"description" %>
 <%=
-begin 
+begin
   data = Vanity::Metric.data(metric)
   min, max = data.map(&:last).minmax
   js = data.map { |date,value| "['#{date.to_time.httpdate}',#{value}]" }.join(",")
@@ -12,3 +12,9 @@ begin
 rescue Exception=>ex
   %{<div class="error">#{vanity_h ex.message}</div>}
 end %>
+<% if total = metric.try(:total) %>
+<p>
+  <strong>All Time:</strong>
+  <%= metric.total %>
+</p>
+<% end %>
